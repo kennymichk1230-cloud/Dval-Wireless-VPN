@@ -613,6 +613,8 @@ fun ServersTab(viewModel: VpnViewModel) {
     val profiles by viewModel.profiles.collectAsStateWithLifecycle()
     val selectedProfile by viewModel.selectedProfile.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
+    val serverMetrics by viewModel.serverMetrics.collectAsStateWithLifecycle()
+    val isRefreshingMetrics by viewModel.isRefreshingMetrics.collectAsStateWithLifecycle()
 
     val isConnected = connectionState == Tunnel.State.UP
 
@@ -622,20 +624,48 @@ fun ServersTab(viewModel: VpnViewModel) {
             .padding(horizontal = 24.dp)
     ) {
         Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = "AVAILABLE ROUTES",
-            style = MaterialTheme.typography.labelMedium.copy(
-                color = CyanPrimary,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.5.sp
-            )
-        )
-        Text(
-            text = "Select your preferred WireGuard peer below.",
-            style = MaterialTheme.typography.bodySmall.copy(
-                color = TextMuted
-            )
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "AVAILABLE ROUTES",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        color = CyanPrimary,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.5.sp
+                    )
+                )
+                Text(
+                    text = "Select your preferred WireGuard peer below.",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = TextMuted
+                    )
+                )
+            }
+            
+            IconButton(
+                onClick = { viewModel.refreshMetrics() },
+                enabled = !isRefreshingMetrics,
+                modifier = Modifier.testTag("refresh_metrics_button")
+            ) {
+                if (isRefreshingMetrics) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = CyanPrimary,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Refresh server performance",
+                        tint = CyanPrimary
+                    )
+                }
+            }
+        }
         Spacer(modifier = Modifier.height(16.dp))
 
         if (profiles.isEmpty()) {
@@ -678,6 +708,25 @@ fun ServersTab(viewModel: VpnViewModel) {
                         Color(0x1AFFFFFF)
                     }
 
+                    val metrics = serverMetrics[profile.id]
+                    val pingValue = metrics?.pingMs
+                    val loadValue = metrics?.loadPercentage ?: 50
+
+                    // Determine load severity colors
+                    val loadColor = when {
+                        loadValue < 40 -> Color(0xFF10B981) // Emerald
+                        loadValue < 80 -> Color(0xFFF59E0B) // Amber
+                        else -> Color(0xFFEF4444) // Rose
+                    }
+
+                    // Determine ping severity colors
+                    val pingColor = when {
+                        pingValue == null -> TextMuted
+                        pingValue < 60 -> Color(0xFF10B981) // Emerald
+                        pingValue < 140 -> Color(0xFFF59E0B) // Amber
+                        else -> Color(0xFFEF4444) // Rose
+                    }
+
                     Card(
                         onClick = { viewModel.selectProfile(profile) },
                         modifier = Modifier
@@ -693,51 +742,119 @@ fun ServersTab(viewModel: VpnViewModel) {
                         shape = RoundedCornerShape(24.dp),
                         border = BorderStroke(1.dp, profileBorderColor)
                     ) {
-                        Row(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                .padding(16.dp)
                         ) {
-                            Text(
-                                text = viewModel.getFlagEmoji(profile.countryCode),
-                                fontSize = 28.sp
-                            )
-                            Spacer(modifier = Modifier.width(16.dp))
-                            Column(modifier = Modifier.weight(1.0f)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Text(
-                                    text = profile.name,
-                                    style = MaterialTheme.typography.bodyLarge.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        color = TextMain
-                                    )
+                                    text = viewModel.getFlagEmoji(profile.countryCode),
+                                    fontSize = 28.sp
                                 )
-                                Text(
-                                    text = if (profile.isCustom) "User Config" else "Premium Peer",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        color = TextMuted
+                                Spacer(modifier = Modifier.width(16.dp))
+                                Column(modifier = Modifier.weight(1.0f)) {
+                                    Text(
+                                        text = profile.name,
+                                        style = MaterialTheme.typography.bodyLarge.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = TextMain
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
-                                )
+                                    Text(
+                                        text = if (profile.isCustom) "User Config" else "Premium Peer",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = TextMuted
+                                        )
+                                    )
+                                }
+
+                                if (isSelected) {
+                                    Icon(
+                                        imageVector = if (isConnected) Icons.Default.Lock else Icons.Default.CheckCircle,
+                                        contentDescription = "Selected",
+                                        tint = CyanPrimary,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                } else if (profile.isCustom && !isConnected) {
+                                    IconButton(
+                                        onClick = { viewModel.deleteProfile(profile) }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Delete,
+                                            contentDescription = "Delete Profile",
+                                            tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
+                                        )
+                                    }
+                                }
                             }
 
-                            if (isSelected) {
-                                Icon(
-                                    imageVector = if (isConnected) Icons.Default.Lock else Icons.Default.CheckCircle,
-                                    contentDescription = "Selected",
-                                    tint = CyanPrimary,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                            } else if (profile.isCustom && !isConnected) {
-                                IconButton(
-                                    onClick = { viewModel.deleteProfile(profile) }
-                                ) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(
-                                        imageVector = Icons.Default.Delete,
-                                        contentDescription = "Delete Profile",
-                                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
+                                        imageVector = Icons.Default.SignalCellularAlt,
+                                        contentDescription = "Ping",
+                                        tint = pingColor,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    if (pingValue == null) {
+                                        Text(
+                                            text = "Testing...",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                color = TextMuted,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "$pingValue ms",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                color = pingColor,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        )
+                                    }
+                                }
+
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.NetworkCheck,
+                                        contentDescription = "Server Load",
+                                        tint = loadColor,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Load: $loadValue%",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = loadColor,
+                                            fontWeight = FontWeight.Bold
+                                        )
                                     )
                                 }
                             }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+                            LinearProgressIndicator(
+                                progress = loadValue / 100f,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(4.dp)
+                                    .clip(RoundedCornerShape(2.dp)),
+                                color = loadColor,
+                                trackColor = Color(0x16FFFFFF)
+                            )
                         }
                     }
                 }

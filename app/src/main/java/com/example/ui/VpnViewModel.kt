@@ -45,6 +45,14 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     private val _durationSeconds = MutableStateFlow(0L)
     val durationSeconds: StateFlow<Long> = _durationSeconds.asStateFlow()
 
+    // Server metrics state flow (profileId -> ServerMetrics)
+    private val _serverMetrics = MutableStateFlow<Map<Int, ServerMetrics>>(emptyMap())
+    val serverMetrics: StateFlow<Map<Int, ServerMetrics>> = _serverMetrics.asStateFlow()
+
+    // Refreshing state
+    private val _isRefreshingMetrics = MutableStateFlow(false)
+    val isRefreshingMetrics: StateFlow<Boolean> = _isRefreshingMetrics.asStateFlow()
+
     // UI Error / Status Message
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
@@ -55,11 +63,39 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     private var timerJob: Job? = null
 
     init {
-        // Automatically select the first profile once loaded
+        // Automatically select the first profile once loaded & initialize server metrics
         viewModelScope.launch {
             profiles.collect { list ->
                 if (_selectedProfile.value == null && list.isNotEmpty()) {
                     _selectedProfile.value = list.first()
+                }
+
+                // Initialize server metrics for profiles if they don't exist yet
+                val currentMetrics = _serverMetrics.value
+                val newMetrics = currentMetrics.toMutableMap()
+                var updated = false
+                for (profile in list) {
+                    if (!newMetrics.containsKey(profile.id)) {
+                        val baseLoad = when (profile.countryCode) {
+                            "US" -> 34
+                            "DE" -> 45
+                            "JP" -> 68
+                            "SG" -> 18
+                            else -> (20..85).random()
+                        }
+                        val basePing = when (profile.countryCode) {
+                            "US" -> 42
+                            "DE" -> 118
+                            "JP" -> 185
+                            "SG" -> 88
+                            else -> (30..250).random()
+                        }
+                        newMetrics[profile.id] = ServerMetrics(pingMs = basePing, loadPercentage = baseLoad)
+                        updated = true
+                    }
+                }
+                if (updated) {
+                    _serverMetrics.value = newMetrics
                 }
             }
         }
@@ -228,4 +264,43 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         val secondChar = Character.codePointAt(countryCode, 1) - 0x41 + 0x1F1E6
         return String(Character.toChars(firstChar)) + String(Character.toChars(secondChar))
     }
+
+    fun refreshMetrics() {
+        if (_isRefreshingMetrics.value) return
+        viewModelScope.launch {
+            _isRefreshingMetrics.value = true
+            
+            // Staggered refresh animation
+            val currentList = profiles.value
+            for (profile in currentList) {
+                // Set ping to null temporarily to show a beautiful loader
+                _serverMetrics.value = _serverMetrics.value.toMutableMap().apply {
+                    this[profile.id] = ServerMetrics(pingMs = null, loadPercentage = (10..95).random())
+                }
+                // Small delay to simulate ping speed
+                delay((150..350).random().toLong())
+                
+                // Update with new random but realistic ping and load
+                val newPing = when (profile.countryCode) {
+                    "US" -> (35..55).random()
+                    "DE" -> (110..130).random()
+                    "JP" -> (175..195).random()
+                    "SG" -> (80..100).random()
+                    else -> (25..240).random()
+                }
+                val newLoad = (15..95).random()
+                
+                _serverMetrics.value = _serverMetrics.value.toMutableMap().apply {
+                    this[profile.id] = ServerMetrics(pingMs = newPing, loadPercentage = newLoad)
+                }
+            }
+            
+            _isRefreshingMetrics.value = false
+        }
+    }
 }
+
+data class ServerMetrics(
+    val pingMs: Int?,
+    val loadPercentage: Int
+)

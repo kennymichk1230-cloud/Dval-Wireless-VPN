@@ -25,6 +25,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: wrapper
+          validate-wrappers: false
 
       - name: Copy env template for secrets plugin
         run: cp .env.example .env

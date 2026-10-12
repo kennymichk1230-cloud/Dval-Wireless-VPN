@@ -45,10 +45,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.data.IpCheckState
+import com.example.data.IpComparisonStatus
+import com.example.data.PublicIpInfo
 import com.example.data.VpnProfile
 import com.example.ui.theme.*
 import com.wireguard.android.backend.Tunnel
 import java.io.InputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -291,6 +297,9 @@ fun DashboardTab(
     val currentSpeedUp by viewModel.currentSpeedUp.collectAsStateWithLifecycle()
     val currentSpeedDown by viewModel.currentSpeedDown.collectAsStateWithLifecycle()
     val durationSeconds by viewModel.durationSeconds.collectAsStateWithLifecycle()
+    val ipCheckState by viewModel.ipCheckState.collectAsStateWithLifecycle()
+    val comparisonStatus by viewModel.comparisonStatus.collectAsStateWithLifecycle()
+    val baselineIp by viewModel.baselineIp.collectAsStateWithLifecycle()
 
     val isConnected = connectionState == Tunnel.State.UP
     val statusText = when (connectionState) {
@@ -414,6 +423,17 @@ fun DashboardTab(
                     )
                 }
             }
+        }
+
+        // Public IP Address Checker Section
+        item {
+            PublicIpSectionCard(
+                ipCheckState = ipCheckState,
+                comparisonStatus = comparisonStatus,
+                baselineIp = baselineIp,
+                isConnected = isConnected,
+                onRefresh = { viewModel.refreshPublicIp() }
+            )
         }
 
         // Circular Connection Trigger with Pulse Animation
@@ -604,6 +624,336 @@ fun DashboardTab(
 
         item {
             Spacer(modifier = Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+fun PublicIpSectionCard(
+    ipCheckState: IpCheckState,
+    comparisonStatus: IpComparisonStatus,
+    baselineIp: String?,
+    isConnected: Boolean,
+    onRefresh: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("public_ip_section_card"),
+        colors = CardDefaults.cardColors(containerColor = Color(0x0DFFFFFF)),
+        shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(1.dp, Color(0x1AFFFFFF))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            // Header row: Title + Refresh Button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(Color(0x1938BDF8), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Public,
+                            contentDescription = "Public IP",
+                            tint = CyanPrimary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "CURRENT PUBLIC IP",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                color = TextMuted,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+                        )
+                        Text(
+                            text = if (isConnected) "Routing through VPN tunnel" else "Direct connection",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = if (isConnected) CyanPrimary else TextMuted
+                            )
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = onRefresh,
+                    enabled = ipCheckState !is IpCheckState.Loading,
+                    modifier = Modifier.testTag("refresh_ip_button")
+                ) {
+                    if (ipCheckState is IpCheckState.Loading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = CyanPrimary,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refresh Public IP",
+                            tint = CyanPrimary
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Body: IP value, Location, and Status details
+            when (ipCheckState) {
+                is IpCheckState.Loading -> {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = CyanPrimary,
+                            strokeWidth = 2.5.dp
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "Querying live public IP...",
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                color = TextMuted
+                            )
+                        )
+                    }
+                }
+                is IpCheckState.Success -> {
+                    val ipInfo = ipCheckState.ipInfo
+                    val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+                    val checkTime = remember(ipCheckState.timestamp) {
+                        timeFormat.format(Date(ipCheckState.timestamp))
+                    }
+
+                    Column {
+                        // IP Address
+                        Text(
+                            text = ipInfo.ip,
+                            style = MaterialTheme.typography.headlineSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp,
+                                color = TextMain
+                            ),
+                            modifier = Modifier.testTag("public_ip_text")
+                        )
+
+                        // Geo Location details (City, Country, Org)
+                        val locationString = buildString {
+                            if (!ipInfo.city.isNullOrBlank()) append(ipInfo.city)
+                            if (!ipInfo.region.isNullOrBlank()) {
+                                if (isNotEmpty()) append(", ")
+                                append(ipInfo.region)
+                            }
+                            if (!ipInfo.country.isNullOrBlank()) {
+                                if (isNotEmpty()) append(", ")
+                                append(ipInfo.country)
+                            }
+                        }
+
+                        if (locationString.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.LocationOn,
+                                    contentDescription = null,
+                                    tint = CyanPrimary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = locationString,
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = TextMuted
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        if (!ipInfo.org.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "ISP / Provider: ${ipInfo.org}",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    color = TextMuted.copy(alpha = 0.8f)
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Last verified: $checkTime",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = TextMuted.copy(alpha = 0.7f)
+                            )
+                        )
+                    }
+                }
+                is IpCheckState.Error -> {
+                    val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+                    val checkTime = remember(ipCheckState.timestamp) {
+                        timeFormat.format(Date(ipCheckState.timestamp))
+                    }
+
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = Color(0xFFEF4444),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Unable to verify IP",
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFEF4444)
+                                )
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = ipCheckState.message,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = TextMuted
+                            )
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Last attempted: $checkTime",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = TextMuted.copy(alpha = 0.7f)
+                            )
+                        )
+                    }
+                }
+                IpCheckState.Idle -> {
+                    Text(
+                        text = "Ready to verify IP",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            color = TextMuted
+                        )
+                    )
+                }
+            }
+
+            // Verification Banner if connected or compared
+            if (isConnected) {
+                Spacer(modifier = Modifier.height(14.dp))
+                when (comparisonStatus) {
+                    IpComparisonStatus.CHANGED -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0x2610B981), RoundedCornerShape(12.dp))
+                                .border(1.dp, Color(0xFF10B981), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = Color(0xFF10B981),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "IP Address Changed",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        color = Color(0xFF34D399),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    IpComparisonStatus.UNCHANGED -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0x26F59E0B), RoundedCornerShape(12.dp))
+                                .border(1.dp, Color(0xFFF59E0B), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = Color(0xFFF59E0B),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "IP Address Unchanged — VPN routing may not be working",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        color = Color(0xFFFBBF24),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    IpComparisonStatus.VERIFICATION_FAILED -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0x26EF4444), RoundedCornerShape(12.dp))
+                                .border(1.dp, Color(0xFFEF4444), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.ErrorOutline,
+                                    contentDescription = null,
+                                    tint = Color(0xFFEF4444),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Unable to verify IP",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        color = Color(0xFFF87171),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    IpComparisonStatus.NONE -> {
+                        // Baseline not yet set or checking
+                    }
+                }
+            } else if (!baselineIp.isNullOrBlank() && ipCheckState is IpCheckState.Success) {
+                // When disconnected, show baseline reminder
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Baseline IP recorded for comparison upon connection.",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        color = TextMuted.copy(alpha = 0.8f)
+                    )
+                )
+            }
         }
     }
 }

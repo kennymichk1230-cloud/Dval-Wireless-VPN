@@ -60,6 +60,23 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
+    // Public IP Checker State
+    private val ipService = PublicIpService()
+
+    private val _ipCheckState = MutableStateFlow<IpCheckState>(IpCheckState.Idle)
+    val ipCheckState: StateFlow<IpCheckState> = _ipCheckState.asStateFlow()
+
+    // Public IP captured before connecting (when disconnected/baseline)
+    private val _baselineIp = MutableStateFlow<String?>(null)
+    val baselineIp: StateFlow<String?> = _baselineIp.asStateFlow()
+
+    // Comparison status between baseline and connected
+    private val _comparisonStatus = MutableStateFlow(IpComparisonStatus.NONE)
+    val comparisonStatus: StateFlow<IpComparisonStatus> = _comparisonStatus.asStateFlow()
+
+    private var previousTunnelState: Tunnel.State? = null
+    private var ipCheckJob: Job? = null
+
     private var timerJob: Job? = null
 
     init {
@@ -100,13 +117,81 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Monitor connection state to start/stop the timer
+        // Monitor connection state: start/stop timer, trigger IP check when tunnel state changes
         viewModelScope.launch {
             connectionState.collect { state ->
                 if (state == Tunnel.State.UP) {
                     startTimer()
                 } else {
                     stopTimer()
+                }
+
+                // Check IP on transition
+                val prevState = previousTunnelState
+                previousTunnelState = state
+
+                if (prevState != null && prevState != state) {
+                    if (state == Tunnel.State.UP) {
+                        // Tunnel just established. Wait a short grace period for routing table & DNS propagation
+                        delay(1200)
+                        checkPublicIp(isAutoCheck = true, isConnectedCheck = true)
+                    } else if (state == Tunnel.State.DOWN) {
+                        // Tunnel just disconnected. Wait brief moment and check baseline IP again
+                        delay(600)
+                        checkPublicIp(isAutoCheck = true, isConnectedCheck = false)
+                    }
+                }
+            }
+        }
+
+        // Initial check on app open (when disconnected)
+        viewModelScope.launch {
+            checkPublicIp(isAutoCheck = true, isConnectedCheck = connectionState.value == Tunnel.State.UP)
+        }
+    }
+
+    /**
+     * Retrieves the current public IP address over the active network interface.
+     * When VPN is connected, the request naturally routes through the established WireGuard tunnel.
+     */
+    fun refreshPublicIp() {
+        checkPublicIp(isAutoCheck = false, isConnectedCheck = connectionState.value == Tunnel.State.UP)
+    }
+
+    private fun checkPublicIp(isAutoCheck: Boolean, isConnectedCheck: Boolean) {
+        ipCheckJob?.cancel()
+        ipCheckJob = viewModelScope.launch {
+            _ipCheckState.value = IpCheckState.Loading
+
+            val result = ipService.fetchPublicIp()
+            result.onSuccess { ipInfo ->
+                _ipCheckState.value = IpCheckState.Success(ipInfo)
+
+                if (isConnectedCheck) {
+                    // Compare against baseline IP
+                    val base = _baselineIp.value
+                    if (base != null) {
+                        if (base != ipInfo.ip) {
+                            _comparisonStatus.value = IpComparisonStatus.CHANGED
+                        } else {
+                            _comparisonStatus.value = IpComparisonStatus.UNCHANGED
+                        }
+                    } else {
+                        // No prior baseline recorded, so we don't compare yet
+                        _comparisonStatus.value = IpComparisonStatus.NONE
+                    }
+                } else {
+                    // We are disconnected, so this is our new baseline IP
+                    _baselineIp.value = ipInfo.ip
+                    _comparisonStatus.value = IpComparisonStatus.NONE
+                }
+            }.onFailure { error ->
+                Log.e(tag, "Public IP check failed", error)
+                _ipCheckState.value = IpCheckState.Error(
+                    error.localizedMessage ?: "Unable to verify public IP"
+                )
+                if (isConnectedCheck) {
+                    _comparisonStatus.value = IpComparisonStatus.VERIFICATION_FAILED
                 }
             }
         }

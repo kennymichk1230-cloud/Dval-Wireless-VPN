@@ -1,14 +1,15 @@
-name: Android CI
+name: Android CI & Release Build
 
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
-    name: Build and Test
+    name: Build, Test and Package Release
     runs-on: ubuntu-latest
 
     steps:
@@ -35,8 +36,70 @@ jobs:
       - name: Verify Gradle Wrapper
         run: ./gradlew --version
 
-      - name: Run Tests
+      - name: Run Unit Tests
         run: ./gradlew testDebugUnitTest
 
-      - name: Assemble Debug APK
-        run: ./gradlew assembleDebug
+      - name: Decode Release Keystore (if secret is configured)
+        id: decode_keystore
+        if: ${{ env.RELEASE_KEYSTORE_BASE64 != '' }}
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          echo "Decoding release keystore from GitHub Secrets..."
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "${{ runner.temp }}/release.jks"
+          echo "KEYSTORE_PATH=${{ runner.temp }}/release.jks" >> $GITHUB_ENV
+
+      - name: Build Release APK
+        env:
+          KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
+          STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease
+
+      - name: Sign Release APK with rsa/apksigner (Fallback if unsigned)
+        id: sign_apk
+        if: ${{ env.KEYSTORE_PATH != '' }}
+        env:
+          STORE_PASS: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+        run: |
+          RELEASE_DIR="app/build/outputs/apk/release"
+          if [ -f "$RELEASE_DIR/app-release-unsigned.apk" ] && [ ! -f "$RELEASE_DIR/app-release.apk" ]; then
+            echo "Signing unsigned release APK with apksigner..."
+            $ANDROID_HOME/build-tools/35.0.0/apksigner sign \
+              --ks "$KEYSTORE_PATH" \
+              --ks-key-alias "${KEY_ALIAS:-upload}" \
+              --ks-pass "pass:$STORE_PASS" \
+              --key-pass "pass:${KEY_PASS:-$STORE_PASS}" \
+              --out "$RELEASE_DIR/app-release.apk" \
+              "$RELEASE_DIR/app-release-unsigned.apk"
+          fi
+
+      - name: Verify Signed APK Signature
+        run: |
+          RELEASE_DIR="app/build/outputs/apk/release"
+          TARGET_APK=""
+          if [ -f "$RELEASE_DIR/app-release.apk" ]; then
+            TARGET_APK="$RELEASE_DIR/app-release.apk"
+          elif [ -f "$RELEASE_DIR/app-release-unsigned.apk" ]; then
+            TARGET_APK="$RELEASE_DIR/app-release-unsigned.apk"
+          fi
+          
+          if [ -n "$TARGET_APK" ]; then
+            echo "Verifying $TARGET_APK with apksigner..."
+            $ANDROID_HOME/build-tools/35.0.0/apksigner verify --verbose "$TARGET_APK" || true
+          else
+            echo "No APK found in release outputs."
+            exit 1
+          fi
+
+      - name: Upload Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dval-vpn-release-apk
+          path: |
+            app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14

@@ -61,7 +61,11 @@ import java.util.Locale
 fun VpnAppScreen(
     viewModel: VpnViewModel,
     modifier: Modifier = Modifier,
-    onRequestVpnPermission: () -> Unit
+    onRequestVpnPermission: () -> Unit = {},
+    onToggleConnection: () -> Unit = {
+        onRequestVpnPermission()
+        viewModel.toggleConnection()
+    }
 ) {
     var selectedTab by remember { mutableStateOf(0) }
     val context = LocalContext.current
@@ -252,6 +256,7 @@ fun VpnAppScreen(
                     0 -> DashboardTab(
                         viewModel = viewModel,
                         onRequestVpnPermission = onRequestVpnPermission,
+                        onToggleConnection = onToggleConnection,
                         onNavigateToServers = { selectedTab = 1 }
                     )
                     1 -> ServersTab(viewModel = viewModel)
@@ -287,10 +292,16 @@ fun VpnAppScreen(
 fun DashboardTab(
     viewModel: VpnViewModel,
     onRequestVpnPermission: () -> Unit,
+    onToggleConnection: () -> Unit = {
+        onRequestVpnPermission()
+        viewModel.toggleConnection()
+    },
     onNavigateToServers: () -> Unit
 ) {
     val selectedProfile by viewModel.selectedProfile.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
+    val connectionStatus by viewModel.vpnConnectionStatus.collectAsStateWithLifecycle()
+    val isConnecting by viewModel.isConnecting.collectAsStateWithLifecycle()
 
     val bytesUploaded by viewModel.bytesUploaded.collectAsStateWithLifecycle()
     val bytesDownloaded by viewModel.bytesDownloaded.collectAsStateWithLifecycle()
@@ -301,11 +312,11 @@ fun DashboardTab(
     val comparisonStatus by viewModel.comparisonStatus.collectAsStateWithLifecycle()
     val baselineIp by viewModel.baselineIp.collectAsStateWithLifecycle()
 
-    val isConnected = connectionState == Tunnel.State.UP
-    val statusText = when (connectionState) {
-        Tunnel.State.UP -> "SECURED"
-        Tunnel.State.TOGGLE -> "PENDING"
-        else -> "UNPROTECTED"
+    val isConnected = connectionStatus == "Connected"
+    val statusText = when (connectionStatus) {
+        "Connected" -> "CONNECTED"
+        "Connecting" -> "CONNECTING"
+        else -> "CONNECT"
     }
 
     LazyColumn(
@@ -365,6 +376,16 @@ fun DashboardTab(
                     )
                 }
             }
+        }
+
+        // Material 3 VPN Connection Status Card with Switch (Connected, Disconnected, Connecting)
+        item {
+            VpnConnectionStatusCard(
+                status = connectionStatus,
+                durationSeconds = durationSeconds,
+                selectedProfileName = selectedProfile?.name,
+                onToggleConnection = onToggleConnection
+            )
         }
 
         // Selected Server Selection Card
@@ -482,29 +503,45 @@ fun DashboardTab(
                 }
 
                 Surface(
-                    onClick = {
-                        onRequestVpnPermission()
-                        viewModel.toggleConnection()
-                    },
+                    onClick = onToggleConnection,
                     modifier = Modifier
                         .size(160.dp)
                         .shadow(16.dp, CircleShape)
                         .testTag("connection_toggle"),
                     shape = CircleShape,
-                    color = if (isConnected) Color(0xFFA8C7FA) else Color(0x0EFFFFFF),
-                    border = BorderStroke(if (isConnected) 4.dp else 2.dp, Color(0x33FFFFFF))
+                    color = when {
+                        isConnected -> Color(0xFFA8C7FA)
+                        isConnecting -> Color(0x3338BDF8)
+                        else -> Color(0x0EFFFFFF)
+                    },
+                    border = BorderStroke(
+                        if (isConnected) 4.dp else 2.dp,
+                        when {
+                            isConnected -> Color(0xFF10B981)
+                            isConnecting -> CyanPrimary
+                            else -> Color(0x33FFFFFF)
+                        }
+                    )
                 ) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                         modifier = Modifier.padding(16.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.PowerSettingsNew,
-                            contentDescription = "Toggle Connection",
-                            tint = if (isConnected) Color(0xFF0F172A) else CyanPrimary,
-                            modifier = Modifier.size(48.dp)
-                        )
+                        if (isConnecting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(36.dp),
+                                color = CyanPrimary,
+                                strokeWidth = 3.dp
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.PowerSettingsNew,
+                                contentDescription = "Toggle Connection",
+                                tint = if (isConnected) Color(0xFF0F172A) else CyanPrimary,
+                                modifier = Modifier.size(48.dp)
+                            )
+                        }
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             text = statusText,
@@ -624,6 +661,189 @@ fun DashboardTab(
 
         item {
             Spacer(modifier = Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+fun VpnConnectionStatusCard(
+    status: String,
+    durationSeconds: Long,
+    selectedProfileName: String?,
+    onToggleConnection: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val isConnected = status == "Connected"
+    val isConnecting = status == "Connecting"
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("vpn_status_card"),
+        colors = CardDefaults.cardColors(
+            containerColor = when {
+                isConnected -> Color(0x1A10B981)
+                isConnecting -> Color(0x1A38BDF8)
+                else -> Color(0x0DFFFFFF)
+            }
+        ),
+        shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(
+            1.5.dp,
+            when {
+                isConnected -> Color(0xFF10B981).copy(alpha = 0.6f)
+                isConnecting -> CyanPrimary.copy(alpha = 0.6f)
+                else -> Color(0x1AFFFFFF)
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(
+                                when {
+                                    isConnected -> Color(0x2610B981)
+                                    isConnecting -> Color(0x2638BDF8)
+                                    else -> Color(0x14FFFFFF)
+                                },
+                                CircleShape
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        when {
+                            isConnecting -> {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(24.dp),
+                                    strokeWidth = 2.5.dp,
+                                    color = CyanPrimary
+                                )
+                            }
+                            isConnected -> {
+                                Icon(
+                                    imageVector = Icons.Default.Shield,
+                                    contentDescription = "Connected",
+                                    tint = Color(0xFF10B981),
+                                    modifier = Modifier.size(26.dp)
+                                )
+                            }
+                            else -> {
+                                Icon(
+                                    imageVector = Icons.Outlined.Shield,
+                                    contentDescription = "Disconnected",
+                                    tint = TextMuted,
+                                    modifier = Modifier.size(26.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(16.dp))
+
+                    Column {
+                        Text(
+                            text = "VPN CONNECTION STATUS",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = TextMuted,
+                                fontWeight = FontWeight.SemiBold,
+                                letterSpacing = 1.sp
+                            )
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = status,
+                                style = MaterialTheme.typography.titleLarge.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = when {
+                                        isConnected -> Color(0xFF34D399)
+                                        isConnecting -> CyanPrimary
+                                        else -> TextMain
+                                    }
+                                ),
+                                modifier = Modifier.testTag("vpn_status_text")
+                            )
+                            if (isConnected) {
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .background(Color(0xFF10B981), CircleShape)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Material 3 Switch to initiate or disconnect VPN tunnel
+                Switch(
+                    checked = isConnected || isConnecting,
+                    onCheckedChange = { onToggleConnection() },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color(0xFF0F172A),
+                        checkedTrackColor = if (isConnected) Color(0xFF10B981) else CyanPrimary,
+                        uncheckedThumbColor = Color.LightGray,
+                        uncheckedTrackColor = Color(0x22FFFFFF),
+                        uncheckedBorderColor = Color(0x44FFFFFF)
+                    ),
+                    modifier = Modifier.testTag("vpn_toggle_switch")
+                )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+            HorizontalDivider(color = Color(0x14FFFFFF), thickness = 1.dp)
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Sub-status description with dynamic details
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = when {
+                        isConnected -> "Server: ${selectedProfileName ?: "Active"}"
+                        isConnecting -> "Negotiating WireGuard handshake..."
+                        else -> "Toggle switch to connect"
+                    },
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = when {
+                            isConnected -> Color(0xFF34D399)
+                            isConnecting -> CyanPrimary
+                            else -> TextMuted
+                        }
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+
+                if (isConnected) {
+                    val minutes = durationSeconds / 60
+                    val secs = durationSeconds % 60
+                    val timeStr = "%02d:%02d".format(minutes, secs)
+                    Text(
+                        text = "Uptime $timeStr",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = Color(0xFF34D399),
+                            fontWeight = FontWeight.Medium
+                        )
+                    )
+                }
+            }
         }
     }
 }

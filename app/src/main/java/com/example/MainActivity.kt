@@ -22,7 +22,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == RESULT_OK) {
-            Toast.makeText(this, "VPN permission granted! Tap connect again.", Toast.LENGTH_SHORT).show()
+            viewModel.connect()
         } else {
             Toast.makeText(this, "VPN permission denied. Cannot establish tunnel.", Toast.LENGTH_LONG).show()
         }
@@ -38,8 +38,24 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     onRequestVpnPermission = {
                         prepareVpn()
+                    },
+                    onToggleConnection = {
+                        handleToggleConnection()
                     }
                 )
+            }
+        }
+    }
+
+    private fun handleToggleConnection() {
+        if (viewModel.connectionState.value == com.wireguard.android.backend.Tunnel.State.UP || viewModel.isConnecting.value) {
+            viewModel.disconnect()
+        } else {
+            val intent = VpnService.prepare(this)
+            if (intent != null) {
+                vpnPrepareLauncher.launch(intent)
+            } else {
+                viewModel.connect()
             }
         }
     }

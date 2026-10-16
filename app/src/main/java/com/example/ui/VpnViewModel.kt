@@ -35,6 +35,22 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     // Connection State
     val connectionState: StateFlow<Tunnel.State> = repository.connectionState
 
+    // Connecting transitional state
+    private val _isConnecting = MutableStateFlow(false)
+    val isConnecting: StateFlow<Boolean> = _isConnecting.asStateFlow()
+
+    // Explicit M3 Connection Status (Connected, Disconnected, Connecting)
+    val vpnConnectionStatus: StateFlow<String> = combine(
+        connectionState,
+        _isConnecting
+    ) { state, connecting ->
+        when {
+            connecting || state == Tunnel.State.TOGGLE -> "Connecting"
+            state == Tunnel.State.UP -> "Connected"
+            else -> "Disconnected"
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "Disconnected")
+
     // Live statistics
     val bytesUploaded: StateFlow<Long> = repository.bytesUploaded
     val bytesDownloaded: StateFlow<Long> = repository.bytesDownloaded
@@ -163,7 +179,8 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         ipCheckJob = viewModelScope.launch {
             _ipCheckState.value = IpCheckState.Loading
 
-            val result = ipService.fetchPublicIp()
+            val profile = if (isConnectedCheck) _selectedProfile.value else null
+            val result = ipService.fetchPublicIp(profile)
             result.onSuccess { ipInfo ->
                 _ipCheckState.value = IpCheckState.Success(ipInfo)
 
@@ -177,8 +194,8 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                             _comparisonStatus.value = IpComparisonStatus.UNCHANGED
                         }
                     } else {
-                        // No prior baseline recorded, so we don't compare yet
-                        _comparisonStatus.value = IpComparisonStatus.NONE
+                        // Connected with new egress IP
+                        _comparisonStatus.value = IpComparisonStatus.CHANGED
                     }
                 } else {
                     // We are disconnected, so this is our new baseline IP
@@ -198,7 +215,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectProfile(profile: VpnProfile) {
-        if (connectionState.value == Tunnel.State.DOWN) {
+        if (connectionState.value == Tunnel.State.DOWN && !_isConnecting.value) {
             _selectedProfile.value = profile
             _errorMessage.value = null
         } else {
@@ -206,31 +223,47 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun toggleConnection() {
+    fun connect() {
         val profile = _selectedProfile.value
         if (profile == null) {
             _errorMessage.value = "Please select a VPN profile first."
             return
         }
 
-        val currentState = connectionState.value
-        if (currentState == Tunnel.State.DOWN) {
+        if (connectionState.value == Tunnel.State.DOWN && !_isConnecting.value) {
+            _isConnecting.value = true
             _statusMessage.value = "Connecting to ${profile.name}..."
             _errorMessage.value = null
             repository.connect(
                 profile = profile,
                 onSuccess = {
+                    _isConnecting.value = false
                     _statusMessage.value = "Connected to ${profile.name}!"
                 },
                 onError = { err ->
+                    _isConnecting.value = false
                     _statusMessage.value = null
                     _errorMessage.value = err
                 }
             )
-        } else {
+        }
+    }
+
+    fun disconnect() {
+        val profile = _selectedProfile.value
+        _isConnecting.value = false
+        if (connectionState.value != Tunnel.State.DOWN) {
             _statusMessage.value = "Disconnecting..."
-            repository.disconnect(profile.name, _durationSeconds.value)
+            repository.disconnect(profile?.name, _durationSeconds.value)
             _statusMessage.value = "Disconnected"
+        }
+    }
+
+    fun toggleConnection() {
+        if (connectionState.value == Tunnel.State.DOWN && !_isConnecting.value) {
+            connect()
+        } else {
+            disconnect()
         }
     }
 

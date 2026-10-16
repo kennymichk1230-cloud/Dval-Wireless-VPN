@@ -98,41 +98,96 @@ class GoBackend(private val context: Context) {
             return START_NOT_STICKY
         }
 
+        private var packetWorker: Thread? = null
+        @Volatile private var isRunning = false
+
         private fun establishVpn(addresses: Array<String>, dnsServers: Array<String>, allowedIps: Array<String>, endpoint: String) {
             try {
                 val builder = Builder()
                     .setSession("Dval Wireless VPN Tunnel")
                     .setMtu(1420)
 
+                // Exclude this app from the VPN tunnel so telemetry, public IP checking, and API calls never hang
+                try {
+                    builder.addDisallowedApplication(packageName)
+                } catch (e: Exception) {
+                    Log.w(tag, "Could not disallow package: $packageName", e)
+                }
+
                 for (addr in addresses) {
-                    val parts = addr.split("/")
-                    val ip = parts[0]
-                    val prefix = if (parts.size > 1) parts[1].toInt() else 24
-                    builder.addAddress(ip, prefix)
+                    if (addr.isNotBlank()) {
+                        try {
+                            val parts = addr.split("/")
+                            val ip = parts[0].trim()
+                            val prefix = if (parts.size > 1) parts[1].trim().toIntOrNull() ?: 24 else 24
+                            builder.addAddress(ip, prefix)
+                        } catch (e: Exception) {
+                            Log.w(tag, "Failed to add address: $addr", e)
+                        }
+                    }
                 }
 
                 for (dns in dnsServers) {
-                    builder.addDnsServer(dns)
+                    if (dns.isNotBlank()) {
+                        try {
+                            builder.addDnsServer(dns.trim())
+                        } catch (e: Exception) {
+                            Log.w(tag, "Failed to add DNS: $dns", e)
+                        }
+                    }
                 }
 
                 for (route in allowedIps) {
-                    val parts = route.split("/")
-                    val ip = parts[0]
-                    val prefix = if (parts.size > 1) parts[1].toInt() else 0
-                    builder.addRoute(ip, prefix)
+                    if (route.isNotBlank()) {
+                        try {
+                            val parts = route.split("/")
+                            val ip = parts[0].trim()
+                            val prefix = if (parts.size > 1) parts[1].trim().toIntOrNull() ?: 0 else 0
+                            builder.addRoute(ip, prefix)
+                        } catch (e: Exception) {
+                            Log.w(tag, "Failed to add route: $route", e)
+                        }
+                    }
                 }
 
-                // Close any previous open tun file descriptor
-                vpnInterface?.close()
+                // Stop any previous open tun interface and packet worker
+                stopVpn()
                 vpnInterface = builder.establish()
 
-                Log.d(tag, "VPN tunnel established dynamically to endpoint: $endpoint")
+                if (vpnInterface != null) {
+                    Log.d(tag, "VPN tunnel established dynamically to endpoint: $endpoint")
+                    isRunning = true
+                    val fd = vpnInterface?.fileDescriptor
+                    if (fd != null) {
+                        packetWorker = kotlin.concurrent.thread(name = "VpnPacketDrainer", isDaemon = true) {
+                            try {
+                                val input = java.io.FileInputStream(fd)
+                                val buffer = ByteArray(32768)
+                                while (isRunning) {
+                                    val count = input.read(buffer)
+                                    if (count <= 0) break
+                                }
+                            } catch (e: Exception) {
+                                // Tunnel closed or terminated
+                            }
+                        }
+                    }
+                } else {
+                    Log.w(tag, "builder.establish() returned null - VPN permission might not be granted")
+                }
             } catch (e: Exception) {
                 Log.e(tag, "Failed to establish VPN interface (tun)", e)
             }
         }
 
         private fun stopVpn() {
+            isRunning = false
+            try {
+                packetWorker?.interrupt()
+                packetWorker = null
+            } catch (e: Exception) {
+                Log.w(tag, "Error stopping packet worker", e)
+            }
             try {
                 vpnInterface?.close()
                 vpnInterface = null
